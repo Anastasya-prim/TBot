@@ -397,8 +397,10 @@ export function registerHandlers(bot) {
       return;
     }
 
+    const stepLeaving = s.quizStepIndex;
     s.quizStepIndex -= 1;
-    truncateQuizDataFromStep(s.quizData, s.quizStepIndex);
+    // Чистим только шаг, с которого уходим, и всё после — не трогаем ответы на шаге, куда вернулись
+    truncateQuizDataFromStep(s.quizData, stepLeaving);
     await ctx.reply('Возвращаемся к предыдущему шагу:');
     await promptQuizStep(ctx);
   });

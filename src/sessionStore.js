@@ -69,9 +69,9 @@ export function resetSession(userId) {
 }
 
 /**
- * Очистить поля квиза начиная с шага fromStep (0-based)
+ * Удалить ответы начиная с шага fromStep включительно (и все последующие шаги).
  * @param {QuizData} quizData
- * @param {number} fromStep
+ * @param {number} fromStep индекс шага 0…7 по STEP_KEYS
  */
 export function truncateQuizDataFromStep(quizData, fromStep) {
   for (let s = fromStep; s < STEP_KEYS.length; s++) {
