@@ -20,9 +20,10 @@
  * @property {Flow} flow
  * @property {number} quizStepIndex
  * @property {QuizData} quizData
- * @property {'timeline' | 'budget' | null} waitingCustom
+ * @property {'timeline' | 'budget' | 'furniture' | null} waitingCustom
  * @property {string} [statusPhone]
  * @property {string} [statusContract]
+ * @property {string} [statusOrderId]
  */
 
 const sessions = new Map();
@@ -47,6 +48,7 @@ function emptySession() {
     waitingCustom: null,
     statusPhone: undefined,
     statusContract: undefined,
+    statusOrderId: undefined,
   };
 }
 

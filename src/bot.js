@@ -1,20 +1,77 @@
 import { Markup, Telegraf } from 'telegraf';
 import {
+  allocateOrderId,
   appendLead,
   appendLog,
   FAQ_TOPICS,
+  findOrder,
   FURNITURE_TYPES,
-  MOCK_ORDERS,
   PRIORITIES,
+  registerOrderFromLead,
 } from './data/business.js';
 import { getSession, resetSession, truncateQuizDataFromStep } from './sessionStore.js';
 import { isValidRuPhone, normalizePhone } from './utils/phone.js';
+
+/** В .env с CRLF (Windows) значение бывает `1\\r` — строгое === '1' ломало отладку */
+export const isDebugUpdates =
+  String(process.env.DEBUG_UPDATES ?? '')
+    .trim()
+    .replace(/^\uFEFF/, '') === '1';
 
 function escapeHtml(s) {
   return String(s)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+}
+
+/**
+ * Нормализация текста пользователя: BOM, zero-width, неразрывный пробел.
+ * Обрезка мусора перед первым «/» — чтобы дошло до /start.
+ */
+function cleanUserText(raw) {
+  if (raw == null || typeof raw !== 'string') return '';
+  let s = raw
+    .replace(/^\uFEFF/g, '')
+    .replace(/[\u200B-\u200F\u202A-\u202E\uFEFF]/g, '')
+    .replace(/\u00A0/g, ' ')
+    .trim();
+  const si = s.indexOf('/');
+  if (si > 0) s = s.slice(si).trim();
+  return s;
+}
+
+/** Текст из message / edited_message без опоры на getters (надёжнее для /start). */
+function rawMessageText(ctx) {
+  const u = ctx.update;
+  const m = u?.message ?? u?.edited_message;
+  return typeof m?.text === 'string' ? m.text : undefined;
+}
+
+/**
+ * @param {import('telegraf').Context} ctx
+ */
+async function handleStart(ctx) {
+  const uid =
+    ctx.from?.id ??
+    ctx.update?.message?.from?.id ??
+    ctx.update?.edited_message?.from?.id;
+  if (uid == null) {
+    console.warn('handleStart: нет id пользователя в update');
+    return;
+  }
+  try {
+    resetSession(uid);
+    appendLog({ type: 'start', userId: uid, source: 'command' });
+    await sendMainMenu(ctx);
+  } catch (e) {
+    console.error('handleStart:', e);
+    try {
+      await ctx.reply('Не удалось открыть меню. Попробуйте ещё раз через несколько секунд.');
+    } catch (_) {
+      /* ignore */
+    }
+  }
 }
 
 function navKb() {
@@ -46,10 +103,19 @@ function faqMenuKb() {
  * @param {import('telegraf').Context} ctx
  */
 export async function sendMainMenu(ctx) {
-  await ctx.reply(
-    'Добро пожаловать в салон мебели на заказ.\n\nВыберите действие:',
-    { ...mainMenuKb() },
-  );
+  const menuText = 'Добро пожаловать в салон мебели на заказ.\n\nВыберите действие:';
+  const extra = mainMenuKb();
+  const chatId = ctx.chat?.id;
+  try {
+    await ctx.reply(menuText, { ...extra });
+  } catch (e) {
+    console.error('sendMainMenu ctx.reply:', e?.message || e);
+    if (chatId != null) {
+      await ctx.telegram.sendMessage(chatId, menuText, extra);
+    } else {
+      throw e;
+    }
+  }
 }
 
 /**
@@ -65,13 +131,19 @@ async function promptQuizStep(ctx) {
   const step = s.quizStepIndex;
 
   if (step === 0) {
-    await ctx.reply('Как к вам обращаться? (имя)', {
+    await ctx.reply('Как к вам обращаться? (напишите и отправьте ваше имя)', {
       ...navKb(),
     });
     return;
   }
 
   if (step === 1) {
+    if (s.waitingCustom === 'furniture') {
+      await ctx.reply('Опишите тип мебели своими словами:', {
+        ...navKb(),
+      });
+      return;
+    }
     const row1 = FURNITURE_TYPES.slice(0, 2).map((f) =>
       Markup.button.callback(f.label, `q:fur:${f.id}`),
     );
@@ -189,6 +261,7 @@ async function promptQuizStep(ctx) {
       `• Бюджет: ${escapeHtml(d.budget || '')}\n` +
       `• Телефон: ${escapeHtml(d.phone || '')}\n` +
       `• Эскиз: ${fileLine}\n\n` +
+      'После отправки заявке будет присвоен номер (ИД) для отслеживания статуса.\n\n' +
       'Отправить менеджеру?';
     await ctx.reply(text, {
       parse_mode: 'HTML',
@@ -210,8 +283,10 @@ async function submitQuiz(ctx) {
   const s = getSession(userId);
   const d = s.quizData;
   const username = ctx.from?.username ? `@${ctx.from.username}` : '—';
+  const orderId = allocateOrderId();
 
   const row = {
+    orderId,
     telegramUserId: userId,
     telegramUsername: username,
     name: d.name,
@@ -228,16 +303,18 @@ async function submitQuiz(ctx) {
   };
 
   appendLead(row);
+  registerOrderFromLead({ phone: d.phone, orderId });
   appendLog({
     type: 'lead_submitted',
     userId,
+    orderId,
     success: true,
     operatorNeeded: false,
   });
 
   const managerId = process.env.MANAGER_CHAT_ID?.trim();
   const summary =
-    `🆕 <b>Новая заявка</b>\n` +
+    `🆕 <b>Новая заявка</b> ${escapeHtml(orderId)}\n` +
     `Имя: ${escapeHtml(d.name || '')}\n` +
     `Тел: ${escapeHtml(d.phone || '')}\n` +
     `Тип: ${escapeHtml(d.furnitureLabel || '')}\n` +
@@ -264,7 +341,8 @@ async function submitQuiz(ctx) {
   }
 
   await ctx.reply(
-    'Спасибо! Заявка принята. Менеджер свяжется с вами в течение часа.',
+    `Спасибо! Заявка принята.\n\nНомер вашей заявки (ИД): <b>${escapeHtml(orderId)}</b>\nСохраните его — по нему можно проверить статус в разделе «Статус заказа».\n\nМенеджер свяжется с вами в течение часа.`,
+    { parse_mode: 'HTML' },
   );
   resetSession(userId);
   await sendMainMenu(ctx);
@@ -274,11 +352,7 @@ async function submitQuiz(ctx) {
  * @param {Telegraf} bot
  */
 export function registerHandlers(bot) {
-  bot.start(async (ctx) => {
-    resetSession(ctx.from.id);
-    appendLog({ type: 'start', userId: ctx.from.id, source: 'command' });
-    await sendMainMenu(ctx);
-  });
+  bot.start(handleStart);
 
   bot.command('menu', async (ctx) => {
     resetSession(ctx.from.id);
@@ -289,9 +363,14 @@ export function registerHandlers(bot) {
     const s = getSession(ctx.from.id);
     s.flow = 'status_phone';
     s.statusPhone = undefined;
+    s.statusOrderId = undefined;
+    s.statusContract = undefined;
     await ctx.reply(
-      'Введите номер телефона, указанный в договоре (как при оформлении заказа):',
-      Markup.inlineKeyboard([[Markup.button.callback('✕ Отмена', 'st:cancel')]]),
+      'Введите номер телефона, <b>ИД заявки</b> (например З-2000) или номер договора (например Д-2024-001):',
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([[Markup.button.callback('✕ Отмена', 'st:cancel')]]),
+      },
     );
   });
 
@@ -318,8 +397,10 @@ export function registerHandlers(bot) {
     const s = getSession(ctx.from.id);
     s.flow = 'status_phone';
     s.statusPhone = undefined;
+    s.statusOrderId = undefined;
+    s.statusContract = undefined;
     await ctx.reply(
-      'Введите номер телефона для проверки статуса:',
+      'Введите номер телефона, ИД заявки (З-…) или номер договора (Д-…):',
       Markup.inlineKeyboard([[Markup.button.callback('✕ Отмена', 'st:cancel')]]),
     );
   });
@@ -347,6 +428,7 @@ export function registerHandlers(bot) {
       userId: ctx.from.id,
       phone: s.statusPhone,
       contract: s.statusContract,
+      orderId: s.statusOrderId,
       window: key,
     });
     await ctx.reply(
@@ -389,6 +471,13 @@ export function registerHandlers(bot) {
     const s = getSession(userId);
     if (s.flow !== 'quiz') return;
 
+    if (s.quizStepIndex === 1 && s.waitingCustom === 'furniture') {
+      s.waitingCustom = null;
+      await ctx.reply('Возврат к выбору типа мебели.');
+      await promptQuizStep(ctx);
+      return;
+    }
+
     s.waitingCustom = null;
 
     if (s.quizStepIndex <= 0) {
@@ -410,8 +499,15 @@ export function registerHandlers(bot) {
     await ctx.answerCbQuery();
     const s = getSession(ctx.from.id);
     if (s.flow !== 'quiz' || s.quizStepIndex !== 1) return;
-    const f = furMap[ctx.match[1]];
+    const id = ctx.match[1];
+    if (id === 'other') {
+      s.waitingCustom = 'furniture';
+      await promptQuizStep(ctx);
+      return;
+    }
+    const f = furMap[id];
     if (!f) return;
+    s.waitingCustom = null;
     s.quizData.furnitureType = f.id;
     s.quizData.furnitureLabel = f.label;
     s.quizStepIndex = 2;
@@ -507,9 +603,10 @@ export function registerHandlers(bot) {
   });
 
   bot.on('text', async (ctx) => {
-    const userId = ctx.from.id;
+    const userId = ctx.from?.id;
+    if (userId == null) return;
     const s = getSession(userId);
-    const text = (ctx.message.text || '').trim();
+    const text = cleanUserText(ctx.message?.text || '');
     if (!text) return;
 
     // Если /start пришёл без сущности bot_command (редко) или команда «провалилась» в text — не молчать
@@ -521,9 +618,7 @@ export function registerHandlers(bot) {
         return;
       }
       if (cmd === 'start') {
-        resetSession(userId);
-        appendLog({ type: 'start', userId, source: 'text_command' });
-        await sendMainMenu(ctx);
+        await handleStart(ctx);
         return;
       }
       if (cmd === 'menu') {
@@ -534,8 +629,10 @@ export function registerHandlers(bot) {
       if (cmd === 'status') {
         s.flow = 'status_phone';
         s.statusPhone = undefined;
+        s.statusOrderId = undefined;
+        s.statusContract = undefined;
         await ctx.reply(
-          'Введите номер телефона, указанный в договоре (как при оформлении заказа):',
+          'Введите номер телефона, ИД заявки (З-…) или номер договора (Д-…):',
           Markup.inlineKeyboard([[Markup.button.callback('✕ Отмена', 'st:cancel')]]),
         );
         return;
@@ -545,30 +642,30 @@ export function registerHandlers(bot) {
     }
 
     if (s.flow === 'status_phone') {
-      const norm = normalizePhone(text);
-      if (!norm) {
-        await ctx.reply('Не удалось распознать номер. Пример: +79001234567');
-        return;
-      }
-      const order = MOCK_ORDERS[norm];
-      appendLog({ type: 'status_check', userId, found: Boolean(order) });
+      const order = findOrder(text);
+      appendLog({ type: 'status_check', userId, found: Boolean(order), query: text.slice(0, 40) });
       if (!order) {
         await ctx.reply(
-          'Заказ с таким телефоном не найден. Уточните номер или свяжитесь с менеджером.',
+          'Заявка или заказ не найдены. Проверьте номер телефона, ИД заявки (например З-1001) или номер договора (например Д-2024-001).',
           { ...mainMenuKb() },
         );
         resetSession(userId);
         return;
       }
 
-      s.statusPhone = norm;
+      s.statusPhone = order.phoneKey;
       s.statusContract = order.contract;
+      s.statusOrderId = order.orderId;
       s.flow = 'status_delivery';
 
-      await ctx.reply(
-        `Ваш заказ <b>${escapeHtml(order.contract)}</b> на этапе: <b>${escapeHtml(order.stageLabel)}</b>.`,
-        { parse_mode: 'HTML' },
-      );
+      const title =
+        order.contract === order.orderId
+          ? `Ваша заявка <b>${escapeHtml(order.orderId)}</b>`
+          : `Ваша заявка <b>${escapeHtml(order.orderId)}</b> (договор <b>${escapeHtml(order.contract)}</b>)`;
+
+      await ctx.reply(`${title} на этапе: <b>${escapeHtml(order.stageLabel)}</b>.`, {
+        parse_mode: 'HTML',
+      });
 
       if (order.stage === 'ready') {
         await ctx.reply('Заказ готов. Когда удобно доставить?', {
@@ -618,6 +715,19 @@ export function registerHandlers(bot) {
         s.quizData.budget = text.slice(0, 200);
         s.waitingCustom = null;
         s.quizStepIndex = 6;
+        await promptQuizStep(ctx);
+        return;
+      }
+
+      if (s.waitingCustom === 'furniture') {
+        if (text.length < 2) {
+          await ctx.reply('Опишите тип мебели чуть подробнее (хотя бы 2 символа).');
+          return;
+        }
+        s.quizData.furnitureType = 'other';
+        s.quizData.furnitureLabel = text.slice(0, 200);
+        s.waitingCustom = null;
+        s.quizStepIndex = 2;
         await promptQuizStep(ctx);
         return;
       }
@@ -690,15 +800,63 @@ export function registerHandlers(bot) {
  */
 export function createBot(token) {
   const bot = new Telegraf(token);
-  if (process.env.DEBUG_UPDATES === '1') {
+
+  // Всегда в консоль (пока не задано SILENT_POLL=1): если строк нет — апдейты до Node не доходят.
+  const silentPoll = String(process.env.SILENT_POLL ?? '')
+    .trim()
+    .replace(/^\uFEFF/, '') === '1';
+  if (!silentPoll) {
+    bot.use(async (ctx, next) => {
+      const u = ctx.update?.update_id;
+      const hint =
+        ctx.update?.message?.text?.slice(0, 24) ??
+        ctx.update?.callback_query?.data ??
+        '';
+      console.log('[poll]', u, hint ? `"${hint}"` : '(не текст/callback)');
+      return next();
+    });
+  }
+
+  // Первый слой цепочки: /start даже без entity bot_command в начале (BOM, мусор, «текст /start»).
+  bot.use(async (ctx, next) => {
+    const raw = rawMessageText(ctx);
+    const from =
+      ctx.from ??
+      ctx.update?.message?.from ??
+      ctx.update?.edited_message?.from;
+    if (typeof raw === 'string' && from) {
+      const t = cleanUserText(raw);
+      const first = (t.split(/\s+/)[0] || '');
+      if (/^\/start(?:@[\w]+)?$/i.test(first)) {
+        const at = first.includes('@') ? first.split('@')[1] : undefined;
+        if (!(at && ctx.me && at.toLowerCase() !== ctx.me.toLowerCase())) {
+          if (isDebugUpdates) {
+            console.log('[update] early /start → handleStart');
+          }
+          await handleStart(ctx);
+          return;
+        }
+      }
+    }
+    return next();
+  });
+
+  if (isDebugUpdates) {
     bot.use(async (ctx, next) => {
       const u = ctx.update.update_id;
-      const msg = ctx.message?.text;
+      const msg = ctx.message?.text ?? ctx.text;
       const cb = ctx.callbackQuery?.data;
-      console.log('[update]', u, msg ? `text: ${msg.slice(0, 60)}` : cb ? `cb: ${cb}` : ctx.updateType);
+      let ut;
+      try {
+        ut = ctx.updateType;
+      } catch {
+        ut = '?';
+      }
+      console.log('[update]', u, msg ? `text: ${String(msg).slice(0, 60)}` : cb ? `cb: ${cb}` : ut);
       return next();
     });
   }
   registerHandlers(bot);
+
   return bot;
 }
