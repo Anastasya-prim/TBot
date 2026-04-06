@@ -1,5 +1,8 @@
 import './loadEnv.js';
 import { createBot, isDebugUpdates } from './bot.js';
+import { connectRedis, disconnectRedis } from './db/redisClient.js';
+import { closeStore, initSheetsClient, ensureSpreadsheetStructure } from './db/store.js';
+import { initBusiness } from './data/business.js';
 
 // Убираем BOM, если .env сохранён как UTF-8 with BOM в Windows
 const token = process.env.BOT_TOKEN?.trim().replace(/^\uFEFF/, '');
@@ -8,14 +11,21 @@ if (!token) {
   process.exit(1);
 }
 
-const bot = createBot(token);
-
-bot.catch((err, ctx) => {
-  console.error('Ошибка:', err);
-  ctx?.reply('Произошла ошибка. Попробуйте /menu').catch(() => {});
-});
+/** @type {import('telegraf').Telegraf | null} */
+let bot = null;
 
 async function main() {
+  await connectRedis();
+  await initSheetsClient();
+  await ensureSpreadsheetStructure();
+  await initBusiness();
+
+  bot = await createBot(token);
+  bot.catch((err, ctx) => {
+    console.error('Ошибка:', err);
+    ctx?.reply('Произошла ошибка. Попробуйте /menu').catch(() => {});
+  });
+
   console.log(
     'Отладка апдейтов:',
     isDebugUpdates ? 'вкл (DEBUG_UPDATES=1) — будут строки [update]' : 'выкл',
@@ -96,5 +106,27 @@ process.on('unhandledRejection', (reason) => {
   console.error('unhandledRejection:', reason);
 });
 
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+async function shutdown(signal) {
+  try {
+    if (bot) await bot.stop(signal);
+  } catch (e) {
+    console.warn('bot.stop:', e?.message || e);
+  }
+  try {
+    await disconnectRedis();
+  } catch (e) {
+    console.warn('disconnectRedis:', e?.message || e);
+  }
+  try {
+    closeStore();
+  } catch (e) {
+    console.warn('closeStore:', e?.message || e);
+  }
+}
+
+process.once('SIGINT', () => {
+  void shutdown('SIGINT').then(() => process.exit(0));
+});
+process.once('SIGTERM', () => {
+  void shutdown('SIGTERM').then(() => process.exit(0));
+});

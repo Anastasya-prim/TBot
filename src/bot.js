@@ -3,13 +3,14 @@ import {
   allocateOrderId,
   appendLead,
   appendLog,
-  FAQ_TOPICS,
   findOrder,
-  FURNITURE_TYPES,
-  PRIORITIES,
+  getFaqTopics,
+  getFurnitureTypes,
+  getPriorities,
   registerOrderFromLead,
 } from './data/business.js';
-import { getSession, resetSession, truncateQuizDataFromStep } from './sessionStore.js';
+import { createSessionMiddleware, getSession, resetSession, truncateQuizDataFromStep } from './sessionStore.js';
+import { getRedis } from './db/redisClient.js';
 import { isValidRuPhone, normalizePhone } from './utils/phone.js';
 
 /** В .env с CRLF (Windows) значение бывает `1\\r` — строгое === '1' ломало отладку */
@@ -62,7 +63,7 @@ async function handleStart(ctx) {
   }
   try {
     resetSession(uid);
-    appendLog({ type: 'start', userId: uid, source: 'command' });
+    await appendLog({ type: 'start', userId: uid, source: 'command' });
     await sendMainMenu(ctx);
   } catch (e) {
     console.error('handleStart:', e);
@@ -92,6 +93,7 @@ function mainMenuKb() {
 }
 
 function faqMenuKb() {
+  const FAQ_TOPICS = getFaqTopics();
   const rows = Object.entries(FAQ_TOPICS).map(([id, t]) => [
     Markup.button.callback(t.title, `faq:${id}`),
   ]);
@@ -144,6 +146,7 @@ async function promptQuizStep(ctx) {
       });
       return;
     }
+    const FURNITURE_TYPES = getFurnitureTypes();
     const row1 = FURNITURE_TYPES.slice(0, 2).map((f) =>
       Markup.button.callback(f.label, `q:fur:${f.id}`),
     );
@@ -170,6 +173,7 @@ async function promptQuizStep(ctx) {
   }
 
   if (step === 3) {
+    const PRIORITIES = getPriorities();
     const row = PRIORITIES.map((p) =>
       Markup.button.callback(p.label, `q:pri:${p.id}`),
     );
@@ -283,7 +287,7 @@ async function submitQuiz(ctx) {
   const s = getSession(userId);
   const d = s.quizData;
   const username = ctx.from?.username ? `@${ctx.from.username}` : '—';
-  const orderId = allocateOrderId();
+  const orderId = await allocateOrderId();
 
   const row = {
     orderId,
@@ -294,6 +298,7 @@ async function submitQuiz(ctx) {
     furnitureLabel: d.furnitureLabel,
     needMeasure: d.needMeasure,
     priority: d.priority,
+    priorityLabel: d.priorityLabel,
     timeline: d.timeline,
     budget: d.budget,
     phone: d.phone,
@@ -302,9 +307,9 @@ async function submitQuiz(ctx) {
     source: 'quiz',
   };
 
-  appendLead(row);
-  registerOrderFromLead({ phone: d.phone, orderId });
-  appendLog({
+  await appendLead(row);
+  await registerOrderFromLead({ phone: d.phone, orderId });
+  await appendLog({
     type: 'lead_submitted',
     userId,
     orderId,
@@ -387,7 +392,7 @@ export function registerHandlers(bot) {
     s.quizStepIndex = 0;
     s.quizData = {};
     s.waitingCustom = null;
-    appendLog({ type: 'quiz_start', userId: ctx.from.id });
+    await appendLog({ type: 'quiz_start', userId: ctx.from.id });
     await ctx.reply('Отлично, подберём ориентир по стоимости. На любом шаге можно вернуться назад или отменить.');
     await promptQuizStep(ctx);
   });
@@ -423,7 +428,7 @@ export function registerHandlers(bot) {
     const s = getSession(ctx.from.id);
     if (s.flow !== 'status_delivery') return;
     const key = /** @type {'morning'|'day'|'evening'|'call'} */ (ctx.match[1]);
-    appendLog({
+    await appendLog({
       type: 'delivery_window',
       userId: ctx.from.id,
       phone: s.statusPhone,
@@ -447,12 +452,12 @@ export function registerHandlers(bot) {
   bot.action(/^faq:(\w+)$/, async (ctx) => {
     await ctx.answerCbQuery();
     const id = ctx.match[1];
-    const topic = FAQ_TOPICS[id];
+    const topic = getFaqTopics()[id];
     if (!topic) {
       await ctx.reply('Раздел не найден.', { ...faqMenuKb() });
       return;
     }
-    appendLog({ type: 'faq', userId: ctx.from.id, topic: id });
+    await appendLog({ type: 'faq', userId: ctx.from.id, topic: id });
     await ctx.reply(topic.text, {
       parse_mode: 'Markdown',
       ...faqMenuKb(),
@@ -494,7 +499,7 @@ export function registerHandlers(bot) {
     await promptQuizStep(ctx);
   });
 
-  const furMap = Object.fromEntries(FURNITURE_TYPES.map((f) => [f.id, f]));
+  const furMap = Object.fromEntries(getFurnitureTypes().map((f) => [f.id, f]));
   bot.action(/^q:fur:(\w+)$/, async (ctx) => {
     await ctx.answerCbQuery();
     const s = getSession(ctx.from.id);
@@ -523,7 +528,7 @@ export function registerHandlers(bot) {
     await promptQuizStep(ctx);
   });
 
-  const priMap = Object.fromEntries(PRIORITIES.map((p) => [p.id, p]));
+  const priMap = Object.fromEntries(getPriorities().map((p) => [p.id, p]));
   bot.action(/^q:pri:(\w+)$/, async (ctx) => {
     await ctx.answerCbQuery();
     const s = getSession(ctx.from.id);
@@ -642,8 +647,8 @@ export function registerHandlers(bot) {
     }
 
     if (s.flow === 'status_phone') {
-      const order = findOrder(text);
-      appendLog({ type: 'status_check', userId, found: Boolean(order), query: text.slice(0, 40) });
+      const order = await findOrder(text);
+      await appendLog({ type: 'status_check', userId, found: Boolean(order), query: text.slice(0, 40) });
       if (!order) {
         await ctx.reply(
           'Заявка или заказ не найдены. Проверьте номер телефона, ИД заявки (например З-1001) или номер договора (например Д-2024-001).',
@@ -756,7 +761,7 @@ export function registerHandlers(bot) {
       }
     }
 
-    appendLog({
+    await appendLog({
       type: 'free_text',
       userId,
       preview: text.slice(0, 120),
@@ -798,8 +803,9 @@ export function registerHandlers(bot) {
 /**
  * @param {string} token
  */
-export function createBot(token) {
+export async function createBot(token) {
   const bot = new Telegraf(token);
+  bot.use(createSessionMiddleware(getRedis()));
 
   // Всегда в консоль (пока не задано SILENT_POLL=1): если строк нет — апдейты до Node не доходят.
   const silentPoll = String(process.env.SILENT_POLL ?? '')

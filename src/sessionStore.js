@@ -26,6 +26,9 @@
  * @property {string} [statusOrderId]
  */
 
+const SESSION_PREFIX = 'tbot:sess:';
+const SESSION_TTL_SEC = 60 * 60 * 24 * 7;
+
 const sessions = new Map();
 
 /** @type {string[][]} поля по шагам квиза (для отката) */
@@ -40,7 +43,7 @@ const STEP_KEYS = [
   ['sketchFileId', 'sketchLink'],
 ];
 
-function emptySession() {
+export function emptySession() {
   return {
     flow: 'idle',
     quizStepIndex: 0,
@@ -49,6 +52,32 @@ function emptySession() {
     statusPhone: undefined,
     statusContract: undefined,
     statusOrderId: undefined,
+  };
+}
+
+/**
+ * @param {import('ioredis').default} redis
+ */
+export function createSessionMiddleware(redis) {
+  return async (ctx, next) => {
+    const uid = ctx.from?.id;
+    if (uid == null) {
+      return next();
+    }
+    const key = SESSION_PREFIX + uid;
+    const raw = await redis.get(key);
+    /** @type {Session} */
+    let session = raw ? JSON.parse(raw) : emptySession();
+    if (!session.quizData || typeof session.quizData !== 'object') session.quizData = {};
+    sessions.set(uid, session);
+    try {
+      await next();
+    } finally {
+      const s = sessions.get(uid);
+      if (s) {
+        await redis.set(key, JSON.stringify(s), 'EX', SESSION_TTL_SEC);
+      }
+    }
   };
 }
 
@@ -71,9 +100,8 @@ export function resetSession(userId) {
 }
 
 /**
- * Удалить ответы начиная с шага fromStep включительно (и все последующие шаги).
  * @param {QuizData} quizData
- * @param {number} fromStep индекс шага 0…7 по STEP_KEYS
+ * @param {number} fromStep
  */
 export function truncateQuizDataFromStep(quizData, fromStep) {
   for (let s = fromStep; s < STEP_KEYS.length; s++) {

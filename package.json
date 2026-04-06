@@ -7,13 +7,16 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node --no-deprecation src/index.js",
-    "dev": "node --no-deprecation src/index.js"
+    "dev": "node --no-deprecation src/index.js",
+    "export:csv": "node src/scripts/exportCsv.js"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
+    "better-sqlite3": "^11.5.0",
     "dotenv": "^16.4.5",
+    "ioredis": "^5.10.1",
     "telegraf": "^4.16.3"
   }
 }
