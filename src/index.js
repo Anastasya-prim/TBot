@@ -1,7 +1,13 @@
 import './loadEnv.js';
 import { createBot, isDebugUpdates } from './bot.js';
 import { connectRedis, disconnectRedis } from './db/redisClient.js';
-import { closeStore, initSheetsClient, ensureSpreadsheetStructure } from './db/store.js';
+import {
+  closeStore,
+  getDbPath,
+  initSheetsClient,
+  ensureSpreadsheetStructure,
+  usePostgres,
+} from './db/store.js';
 import { initBusiness } from './data/business.js';
 
 // Убираем BOM, если .env сохранён как UTF-8 with BOM в Windows
@@ -18,6 +24,11 @@ async function main() {
   await connectRedis();
   await initSheetsClient();
   await ensureSpreadsheetStructure();
+  console.log(
+    usePostgres()
+      ? 'Хранилище: PostgreSQL (DATABASE_URL)'
+      : `Хранилище: SQLite — ${getDbPath()}`,
+  );
   await initBusiness();
 
   bot = await createBot(token);
@@ -118,7 +129,7 @@ async function shutdown(signal) {
     console.warn('disconnectRedis:', e?.message || e);
   }
   try {
-    closeStore();
+    await closeStore();
   } catch (e) {
     console.warn('closeStore:', e?.message || e);
   }
