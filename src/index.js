@@ -26,7 +26,11 @@ async function main() {
   await ensureSpreadsheetStructure();
   console.log(
     usePostgres()
-      ? 'Хранилище: PostgreSQL (DATABASE_URL)'
+      ? `Хранилище: PostgreSQL (DATABASE_URL)${
+          /supabase\.co/i.test(String(process.env.DATABASE_URL))
+            ? ' — таблицы: Supabase → Table Editor'
+            : ''
+        }`
       : `Хранилище: SQLite — ${getDbPath()}`,
   );
   await initBusiness();
