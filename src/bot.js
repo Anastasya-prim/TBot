@@ -791,7 +791,7 @@ export function registerHandlers(bot) {
     if (!fileId) return;
 
     s.quizData.sketchFileId = fileId;
-    s.quizData.sketchLink = `https://drive.google.com/file/d/mock_${fileId.slice(-12)}/view`;
+    s.quizData.sketchLink = `https://example.com/sketch/mock_${fileId.slice(-12)}`;
     s.quizStepIndex = 8;
     await ctx.reply(`Файл «${escapeHtml(fileName)}» принят (в демо — условная ссылка на Drive).`, {
       parse_mode: 'HTML',

@@ -61,7 +61,7 @@ function defaultFaqText(id) {
   return map[id] || '';
 }
 
-export async function ensureSpreadsheetStructure() {
+export async function ensureDatabaseSchema() {
   const p = getPool();
   const ddl = [
     `CREATE TABLE IF NOT EXISTS orders (

@@ -1,5 +1,5 @@
 /**
- * Экспорт таблиц в CSV (UTF-8 с BOM, разделитель `;`).
+ * Экспорт данных БД в CSV (UTF-8 с BOM, разделитель `;`).
  * SQLite: база из SQLITE_PATH. PostgreSQL: при заданном DATABASE_URL.
  * Запуск: npm run export:csv
  */
@@ -48,7 +48,7 @@ async function exportSqlite() {
   }
 
   db.close();
-  console.log('Готово. Откройте CSV в Excel или загрузите на Яндекс Диск вручную.');
+  console.log('Готово. Откройте CSV в Excel или в другом редакторе.');
 }
 
 async function main() {

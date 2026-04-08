@@ -4,8 +4,8 @@ import { connectRedis, disconnectRedis } from './db/redisClient.js';
 import {
   closeStore,
   getDbPath,
-  initSheetsClient,
-  ensureSpreadsheetStructure,
+  initDatabase,
+  ensureDatabaseSchema,
   usePostgres,
 } from './db/store.js';
 import { initBusiness } from './data/business.js';
@@ -22,13 +22,13 @@ let bot = null;
 
 async function main() {
   await connectRedis();
-  await initSheetsClient();
-  await ensureSpreadsheetStructure();
+  await initDatabase();
+  await ensureDatabaseSchema();
   console.log(
     usePostgres()
       ? `Хранилище: PostgreSQL (DATABASE_URL)${
           /supabase\.co/i.test(String(process.env.DATABASE_URL))
-            ? ' — таблицы: Supabase → Table Editor'
+            ? ' — просмотр данных: Supabase → Table Editor'
             : ''
         }`
       : `Хранилище: SQLite — ${getDbPath()}`,

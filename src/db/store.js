@@ -2,7 +2,7 @@ import * as sqlite from './storeSqlite.js';
 import * as pg from './storePg.js';
 
 /**
- * Если задан DATABASE_URL (postgresql://…), используется PostgreSQL (в т.ч. Yandex Managed PostgreSQL).
+ * Если задан DATABASE_URL (postgresql://…), используется PostgreSQL.
  * Иначе — локальный SQLite (data/tbot.db).
  */
 export function usePostgres() {
@@ -10,14 +10,14 @@ export function usePostgres() {
   return Boolean(raw && /^postgres(ql)?:\/\//i.test(raw));
 }
 
-export async function initSheetsClient() {
+export async function initDatabase() {
   if (usePostgres()) return pg.initStore();
-  return sqlite.initSheetsClient();
+  return sqlite.initDatabase();
 }
 
-export async function ensureSpreadsheetStructure() {
-  if (usePostgres()) return pg.ensureSpreadsheetStructure();
-  return sqlite.ensureSpreadsheetStructure();
+export async function ensureDatabaseSchema() {
+  if (usePostgres()) return pg.ensureDatabaseSchema();
+  return sqlite.ensureDatabaseSchema();
 }
 
 export async function fetchAllOrders() {

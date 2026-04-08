@@ -11,7 +11,7 @@ export function getDbPath() {
   return path.join(process.cwd(), 'data', 'tbot.db');
 }
 
-export async function initSheetsClient() {
+export async function initDatabase() {
   await initStore();
 }
 
@@ -51,7 +51,7 @@ function defaultFaqText(id) {
   return map[id] || '';
 }
 
-export async function ensureSpreadsheetStructure() {
+export async function ensureDatabaseSchema() {
   const d = getDb();
   d.exec(`
     CREATE TABLE IF NOT EXISTS orders (
