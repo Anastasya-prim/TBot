@@ -76,6 +76,58 @@ function invalidUrlHelp() {
   );
 }
 
+/**
+ * pg-connection-string при sslrootcert/sslcert/sslkey в URI задаёт `ssl.ca` только этим файлом и фактически подменяет доверенные корни Node → часто SELF_SIGNED_CERT_IN_CHAIN.
+ * Доп. CA лучше через PGSSLROOTCERT (у нас он суммируется с tls.rootCertificates).
+ */
+function stripSslFileParamsFromUrl(connString) {
+  const keep =
+    String(process.env.DATABASE_KEEP_SSL_PARAMS_IN_URL ?? '')
+      .trim()
+      .replace(/^\uFEFF/, '') === '1';
+  if (keep) return connString;
+
+  let u;
+  try {
+    u = new URL(connString);
+  } catch {
+    return connString;
+  }
+  const keys = ['sslrootcert', 'sslcert', 'sslkey'];
+  let changed = false;
+  for (const k of keys) {
+    if (u.searchParams.has(k)) {
+      u.searchParams.delete(k);
+      changed = true;
+    }
+  }
+  if (changed) {
+    console.warn(
+      'PostgreSQL: из DATABASE_URL убраны sslrootcert/sslcert/sslkey (иначе node-pg подставляет только этот CA). ' +
+        'Доп. CA: PGSSLROOTCERT. Сохранить параметры в URI: DATABASE_KEEP_SSL_PARAMS_IN_URL=1.',
+    );
+  }
+  return u.toString();
+}
+
+/** Нужно ли явно передавать `ssl` в Pool (иначе доверяем разбору URI + корням Node). */
+function sslNeedsExplicitPoolSsl() {
+  const insecure =
+    String(process.env.DATABASE_SSL_REJECT_UNAUTHORIZED ?? '')
+      .trim()
+      .replace(/^\uFEFF/, '') === '0';
+  if (insecure) return true;
+  if (process.env.PGSSLROOTCERT?.trim().replace(/^\uFEFF/, '')) return true;
+  if (
+    String(process.env.DATABASE_SSL_USE_SYSTEM_CA ?? '')
+      .trim()
+      .replace(/^\uFEFF/, '') === '1'
+  ) {
+    return true;
+  }
+  return false;
+}
+
 const IPV4_RE = /^(?:\d{1,3}\.){3}\d{1,3}$/;
 
 /** @param {string} hostname */
@@ -160,6 +212,8 @@ async function buildPoolConfig(connString) {
   }
   if (!u.hostname) throw invalidUrlHelp();
 
+  const poolConnString = stripSslFileParamsFromUrl(connString);
+
   const host = u.hostname;
   const port = parseInt(u.port || '5432', 10);
   const user = decodeURIComponent(u.username || '');
@@ -226,11 +280,14 @@ async function buildPoolConfig(connString) {
   console.log(
     `PostgreSQL: ${host} — connectionString + IPv4-first DNS` + (ipv4 ? ` (A=${ipv4})` : ''),
   );
-  return {
+  const out = {
     ...poolBase,
-    connectionString: connString,
-    ssl: baseSsl,
+    connectionString: poolConnString,
   };
+  if (sslNeedsExplicitPoolSsl()) {
+    out.ssl = baseSsl;
+  }
+  return out;
 }
 
 export async function initStore() {
@@ -288,8 +345,8 @@ export async function initStore() {
         ? ' Проверьте PGSSLROOTCERT (доп. CA суммируется с корнями Node).'
         : '';
       throw new Error(
-        'PostgreSQL: ошибка TLS (сертификат). По умолчанию используется подключение по имени хоста (не по сырому IP). ' +
-          'Если видите MITM/прокси — проверьте сеть VPS. CA: sudo apt install ca-certificates; DATABASE_SSL_USE_SYSTEM_CA=1.' +
+        'PostgreSQL: ошибка TLS (сертификат). Уберите sslrootcert/sslcert/sslkey из DATABASE_URL (или DATABASE_KEEP_SSL_PARAMS_IN_URL=1). ' +
+          'MITM/прокси на VPS. CA: apt install ca-certificates; DATABASE_SSL_USE_SYSTEM_CA=1.' +
           caHint +
           ' Временный обход (небезопасно): DATABASE_SSL_REJECT_UNAUTHORIZED=0 в .env',
       );
