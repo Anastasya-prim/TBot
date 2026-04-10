@@ -1,3 +1,4 @@
+import dns from 'node:dns';
 import fs from 'fs';
 import path from 'path';
 import pg from 'pg';
@@ -33,6 +34,11 @@ export async function initStore() {
   const conn = process.env.DATABASE_URL?.trim().replace(/^\uFEFF/, '');
   if (!conn) throw new Error('DATABASE_URL не задан для PostgreSQL');
 
+  /* Supabase часто отдаёт AAAA (IPv6); у многих VPS нет маршрута → ENETUNREACH. Сначала пробуем IPv4. */
+  if (typeof dns.setDefaultResultOrder === 'function') {
+    dns.setDefaultResultOrder('ipv4first');
+  }
+
   pool = new pg.Pool({
     connectionString: conn,
     max: 10,
@@ -56,6 +62,19 @@ export async function initStore() {
       }
       pool = null;
       throw invalidUrlHelp();
+    }
+    if (e.code === 'ENETUNREACH' || msg.includes('ENETUNREACH')) {
+      try {
+        await pool.end();
+      } catch {
+        /* ignore */
+      }
+      pool = null;
+      throw new Error(
+        'PostgreSQL: сеть недоступна (часто IPv6 до Supabase без маршрута). ' +
+          'Включён приоритет IPv4 при следующем запуске. ' +
+          'Если снова ошибка — в Supabase «Connect» возьмите строку Session pooler (IPv4) или в .env добавьте NODE_OPTIONS=--dns-result-order=ipv4first',
+      );
     }
     throw e;
   }
