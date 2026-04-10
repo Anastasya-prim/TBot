@@ -265,7 +265,7 @@ async function promptQuizStep(ctx) {
       `• Бюджет: ${escapeHtml(d.budget || '')}\n` +
       `• Телефон: ${escapeHtml(d.phone || '')}\n` +
       `• Эскиз: ${fileLine}\n\n` +
-      'После отправки заявке будет присвоен номер (ИД) для отслеживания статуса.\n\n' +
+      'После отправки заявке будет присвоен номер для отслеживания статуса.\n\n' +
       'Отправить менеджеру?';
     await ctx.reply(text, {
       parse_mode: 'HTML',
@@ -346,7 +346,7 @@ async function submitQuiz(ctx) {
   }
 
   await ctx.reply(
-    `Спасибо! Заявка принята.\n\nНомер вашей заявки (ИД): <b>${escapeHtml(orderId)}</b>\nСохраните его — по нему можно проверить статус в разделе «Статус заказа».\n\nМенеджер свяжется с вами в течение часа.`,
+    `Спасибо! Заявка принята.\n\nНомер вашей заявки: <b>${escapeHtml(orderId)}</b>\nСохраните его — по нему можно проверить статус в разделе «Статус заказа».\n\nМенеджер свяжется с вами в течение часа.`,
     { parse_mode: 'HTML' },
   );
   resetSession(userId);
@@ -371,7 +371,7 @@ export function registerHandlers(bot) {
     s.statusOrderId = undefined;
     s.statusContract = undefined;
     await ctx.reply(
-      'Введите номер телефона, <b>ИД заявки</b> (например З-2000) или номер договора (например Д-2024-001):',
+      'Введите номер телефона, <b>номер заявки</b> (например 2000) или номер договора (например Д-2024-001):',
       {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([[Markup.button.callback('✕ Отмена', 'st:cancel')]]),
@@ -405,7 +405,7 @@ export function registerHandlers(bot) {
     s.statusOrderId = undefined;
     s.statusContract = undefined;
     await ctx.reply(
-      'Введите номер телефона, ИД заявки (З-…) или номер договора (Д-…):',
+      'Введите номер телефона, номер заявки (только цифры) или номер договора (Д-…):',
       Markup.inlineKeyboard([[Markup.button.callback('✕ Отмена', 'st:cancel')]]),
     );
   });
@@ -637,7 +637,7 @@ export function registerHandlers(bot) {
         s.statusOrderId = undefined;
         s.statusContract = undefined;
         await ctx.reply(
-          'Введите номер телефона, ИД заявки (З-…) или номер договора (Д-…):',
+          'Введите номер телефона, номер заявки (только цифры) или номер договора (Д-…):',
           Markup.inlineKeyboard([[Markup.button.callback('✕ Отмена', 'st:cancel')]]),
         );
         return;
@@ -651,7 +651,7 @@ export function registerHandlers(bot) {
       await appendLog({ type: 'status_check', userId, found: Boolean(order), query: text.slice(0, 40) });
       if (!order) {
         await ctx.reply(
-          'Заявка или заказ не найдены. Проверьте номер телефона, ИД заявки (например З-1001) или номер договора (например Д-2024-001).',
+          'Заявка или заказ не найдены. Проверьте номер телефона, номер заявки (например 2001) или номер договора (например Д-2024-001).',
           { ...mainMenuKb() },
         );
         resetSession(userId);

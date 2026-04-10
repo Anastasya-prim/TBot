@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import tls from 'node:tls';
 import pg from 'pg';
+import { parseNumericOrderId } from '../utils/orderId.js';
 import { EXPORT_TABLES } from './storeSqlite.js';
 
 /** @type {pg.Pool | null} */
@@ -478,9 +479,9 @@ async function seedDefaultsIfNeeded(/** @type {pg.Pool} */ p) {
   const { rows: c1 } = await p.query('SELECT COUNT(*)::int AS c FROM orders');
   if (c1[0]?.c === 0) {
     const demo = [
-      ['79991234567', 'З-1001', 'Д-2024-001', 'production', 'изготовление'],
-      ['79001112233', 'З-1002', 'Д-2024-077', 'ready', 'готов к доставке'],
-      ['79005556666', 'З-1003', 'Д-2023-412', 'measure', 'замер'],
+      ['79991234567', '1001', 'Д-2024-001', 'production', 'изготовление'],
+      ['79001112233', '1002', 'Д-2024-077', 'ready', 'готов к доставке'],
+      ['79005556666', '1003', 'Д-2023-412', 'measure', 'замер'],
     ];
     for (const row of demo) {
       await p.query(
@@ -645,8 +646,8 @@ export async function getMaxOrderNumberFromOrders() {
   const rows = await fetchAllOrders();
   let max = 1999;
   for (const o of rows) {
-    const m = /^З-(\d+)$/i.exec(o.orderId);
-    if (m) max = Math.max(max, parseInt(m[1], 10));
+    const n = parseNumericOrderId(o.orderId);
+    if (!Number.isNaN(n)) max = Math.max(max, n);
   }
   return max;
 }

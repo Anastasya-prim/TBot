@@ -1,0 +1,44 @@
+---
+description: TBot — Telegram-бот мебельного салона (архитектура, данные, интеграции)
+alwaysApply: true
+---
+
+# TBot (furniture salon)
+
+## Стек
+
+- **Node.js 18+**, **Telegraf**, ESM (`"type": "module"`).
+- **Redis** (`REDIS_URL`): сессии `tbot:sess:<telegramUserId>` (JSON, TTL 7 дней), счётчик заявок `tbot:order_seq`.
+- **Хранилище**: без `DATABASE_URL` — **SQLite** (`data/tbot.db`); с `DATABASE_URL` — **PostgreSQL** (часто **Supabase**). Схема в `ensureDatabaseSchema` / миграции колонок `orders` в `storePg.js`.
+
+## Вход и слои
+
+- `src/index.js` — Redis, БД, `initBusiness`, запуск polling.
+- `src/bot.js` — сценарии, квиз, статус, FAQ.
+- `src/sessionStore.js` — middleware Redis + in-memory Map; прогресс квиза дублируется в **`quiz_sessions`** (динамический `import('./db/store.js')` без циклов).
+- `src/data/business.js` — номера заявок, `findOrder`, кэш справочников/заказов.
+- `src/db/store.js` — выбор SQLite vs `storePg.js`.
+
+## Номера заявок
+
+- Новые ИД — **только цифры** (`allocateOrderId` → `String(n)` из Redis `INCR`).
+- Поиск поддерживает старый формат **`З-…`** в БД (`src/utils/orderId.js`).
+
+## Квиз и FSM
+
+- `flow`: `idle` | `quiz` | `status_phone` | `status_delivery` | `faq`.
+- Квиз: `quizStepIndex` **0…8**; при необходимости `waitingCustom`: `furniture` | `timeline` | `budget`.
+- Эскиз: в БД только **`sketch_file_id`** (Telegram) и заглушка **`sketch_link`**; файлы не грузятся в Supabase Storage.
+
+## PostgreSQL / VPS
+
+- Pooler Supabase: при необходимости IPv4 — логика в `storePg.js` (`connectionString` + IPv4-first DNS; опции `DATABASE_USE_RESOLVED_IPV4_TCP`, `DATABASE_HOST_IPV4`); из URI могут вырезаться `sslrootcert`/… чтобы не ломать цепочку CA.
+- Таблицы: `orders`, `leads`, `history`, `faq`, `furniture`, `priorities`, `quiz_sessions`.
+
+## Env (важное)
+
+- `BOT_TOKEN`, `REDIS_URL`; опционально `DATABASE_URL`, `MANAGER_CHAT_ID`, `DEBUG_UPDATES`, `SILENT_POLL`.
+
+## Экспорт
+
+- `npm run export:csv` — выгрузка таблиц из активного хранилища.

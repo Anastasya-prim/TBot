@@ -1,5 +1,6 @@
 import { getRedis } from '../db/redisClient.js';
 import * as store from '../db/store.js';
+import { normalizeOrderIdLookupKey } from '../utils/orderId.js';
 import { normalizePhone } from '../utils/phone.js';
 
 /**
@@ -75,15 +76,11 @@ async function getOrdersForLookup() {
 
 export async function allocateOrderId() {
   const n = await getRedis().incr(ORDER_SEQ_KEY);
-  return `З-${n}`;
+  return String(n);
 }
 
 function compactKey(s) {
-  return String(s)
-    .replace(/\s/g, '')
-    .toLowerCase()
-    // ИД «З-…» в БД — кириллическая З; часто вводят цифру 3
-    .replace(/\u0437/g, '3');
+  return String(s).replace(/\s/g, '').toLowerCase();
 }
 
 export async function findOrder(raw) {
@@ -98,10 +95,11 @@ export async function findOrder(raw) {
     if (byPhone) return byPhone;
   }
 
+  const qOrder = normalizeOrderIdLookupKey(trimmed);
   const q = compactKey(trimmed);
   return (
     list.find((o) => {
-      if (compactKey(o.orderId) === q) return true;
+      if (qOrder && normalizeOrderIdLookupKey(o.orderId) === qOrder) return true;
       if (compactKey(o.contract) === q) return true;
       return false;
     }) || null

@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { parseNumericOrderId } from '../utils/orderId.js';
 import path from 'path';
 import Database from 'better-sqlite3';
 
@@ -120,9 +121,9 @@ function seedDefaultsIfNeeded(d) {
       'INSERT INTO orders (phone_key, order_id, contract, stage, stage_label) VALUES (?,?,?,?,?)',
     );
     const demo = [
-      ['79991234567', 'З-1001', 'Д-2024-001', 'production', 'изготовление'],
-      ['79001112233', 'З-1002', 'Д-2024-077', 'ready', 'готов к доставке'],
-      ['79005556666', 'З-1003', 'Д-2023-412', 'measure', 'замер'],
+      ['79991234567', '1001', 'Д-2024-001', 'production', 'изготовление'],
+      ['79001112233', '1002', 'Д-2024-077', 'ready', 'готов к доставке'],
+      ['79005556666', '1003', 'Д-2023-412', 'measure', 'замер'],
     ];
     for (const row of demo) ins.run(...row);
   }
@@ -283,8 +284,8 @@ export async function getMaxOrderNumberFromOrders() {
   const rows = await fetchAllOrders();
   let max = 1999;
   for (const o of rows) {
-    const m = /^З-(\d+)$/i.exec(o.orderId);
-    if (m) max = Math.max(max, parseInt(m[1], 10));
+    const n = parseNumericOrderId(o.orderId);
+    if (!Number.isNaN(n)) max = Math.max(max, n);
   }
   return max;
 }
