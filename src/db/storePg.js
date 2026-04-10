@@ -20,14 +20,36 @@ function buildSslOption() {
   }
 
   const certPath = process.env.PGSSLROOTCERT?.trim().replace(/^\uFEFF/, '');
-  if (certPath && fs.existsSync(certPath)) {
-    return {
-      rejectUnauthorized: true,
-      ca: fs.readFileSync(certPath, 'utf8'),
-    };
+  const useSystemCa =
+    String(process.env.DATABASE_SSL_USE_SYSTEM_CA ?? '')
+      .trim()
+      .replace(/^\uFEFF/, '') === '1';
+
+  const extraPems = [];
+  if (certPath) {
+    if (fs.existsSync(certPath)) {
+      extraPems.push(fs.readFileSync(certPath, 'utf8'));
+    } else {
+      console.warn('PGSSLROOTCERT задан, но файл не найден:', certPath);
+    }
   }
-  if (process.env.PGSSLROOTCERT) {
-    console.warn('PGSSLROOTCERT задан, но файл не найден:', certPath);
+  if (useSystemCa) {
+    const sys = process.platform === 'linux' ? '/etc/ssl/certs/ca-certificates.crt' : null;
+    if (sys && fs.existsSync(sys)) {
+      extraPems.push(fs.readFileSync(sys, 'utf8'));
+    } else {
+      console.warn(
+        'DATABASE_SSL_USE_SYSTEM_CA=1: ожидается /etc/ssl/certs/ca-certificates.crt (apt install ca-certificates).',
+      );
+    }
+  }
+
+  if (extraPems.length) {
+    const ca = [...tls.rootCertificates];
+    for (const pem of extraPems) {
+      if (pem && pem.trim()) ca.push(pem);
+    }
+    return { rejectUnauthorized: true, ca };
   }
   return { rejectUnauthorized: true };
 }
