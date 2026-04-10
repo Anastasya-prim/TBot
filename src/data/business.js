@@ -79,7 +79,11 @@ export async function allocateOrderId() {
 }
 
 function compactKey(s) {
-  return String(s).replace(/\s/g, '').toLowerCase();
+  return String(s)
+    .replace(/\s/g, '')
+    .toLowerCase()
+    // ИД «З-…» в БД — кириллическая З; часто вводят цифру 3
+    .replace(/\u0437/g, '3');
 }
 
 export async function findOrder(raw) {
