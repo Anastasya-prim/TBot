@@ -31,7 +31,7 @@ function invalidUrlHelp() {
 }
 
 /** @param {string} hostname */
-async function resolveFirstIpv4(hostname) {
+async function tryResolveIpv4(hostname) {
   try {
     const addrs = await dns.promises.resolve4(hostname);
     if (addrs.length) return addrs[0];
@@ -44,6 +44,37 @@ async function resolveFirstIpv4(hostname) {
   } catch {
     return null;
   }
+}
+
+/**
+ * Сначала системный DNS; если IPv4 нет — через 8.8.8.8/1.1.1.1 (на VPS часто только AAAA).
+ * @param {string} hostname
+ */
+async function resolveFirstIpv4(hostname) {
+  let ip = await tryResolveIpv4(hostname);
+  if (ip) return ip;
+
+  const prev = dns.getServers();
+  try {
+    dns.setServers(['8.8.8.8', '1.1.1.1']);
+    ip = await tryResolveIpv4(hostname);
+    if (ip) return ip;
+  } finally {
+    try {
+      dns.setServers(prev);
+    } catch {
+      /* ignore */
+    }
+  }
+  return null;
+}
+
+const IPV4_RE = /^(?:\d{1,3}\.){3}\d{1,3}$/;
+
+function manualIpv4FromEnv() {
+  const raw = process.env.DATABASE_HOST_IPV4?.trim().replace(/^\uFEFF/, '');
+  if (!raw || !IPV4_RE.test(raw)) return null;
+  return raw;
 }
 
 /**
@@ -70,6 +101,20 @@ async function buildPoolConfig(connString) {
     max: 10,
     connectionTimeoutMillis: 20000,
   };
+
+  const manualIp = manualIpv4FromEnv();
+  if (manualIp) {
+    console.log(`PostgreSQL: DATABASE_HOST_IPV4=${manualIp} (TLS servername=${host})`);
+    return {
+      ...poolBase,
+      host: manualIp,
+      port,
+      user,
+      password,
+      database,
+      ssl: { ...baseSsl, servername: host },
+    };
+  }
 
   const ipv4 = await resolveFirstIpv4(host);
   if (ipv4) {
@@ -127,10 +172,11 @@ export async function initStore() {
         /* ignore */
       }
       pool = null;
+      console.error('PostgreSQL ENETUNREACH:', msg);
       throw new Error(
-        'PostgreSQL: сеть недоступна (часто IPv6 без маршрута или нет A-записи DNS). ' +
-          'В коде уже подключение через IPv4, если он есть у хоста. ' +
-          'Иначе в Supabase «Connect» используйте Session pooler или проверьте DNS/фаервол.',
+        'PostgreSQL: хост недоступен (ENETUNREACH). Частые причины: только IPv6 в DNS, нет IPv6-маршрута, ' +
+          'или фаервол режет исходящий порт 5432. В .env можно задать IPv4: DATABASE_HOST_IPV4=1.2.3.4 ' +
+          '(команда: dig +short db.xxxxx.supabase.co @8.8.8.8). Либо возьмите URI Session pooler в Supabase → Connect.',
       );
     }
     throw e;
