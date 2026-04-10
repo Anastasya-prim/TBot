@@ -147,7 +147,8 @@ function manualIpv4FromEnv() {
 }
 
 /**
- * Обход ENETUNREACH IPv6: TCP на IPv4; `ssl.servername` = хост из URI (node-pg 8.x не использует `hostaddr` для сокета).
+ * По умолчанию: `connectionString` + IPv4-first DNS — TCP к пулеру по имени хоста (нормальный TLS).
+ * Опционально `DATABASE_USE_RESOLVED_IPV4_TCP=1`: TCP на разрешённый IPv4 + `ssl.servername` (если ENETUNREACH и нужен обход).
  * @param {string} connString
  */
 async function buildPoolConfig(connString) {
@@ -186,8 +187,13 @@ async function buildPoolConfig(connString) {
   }
 
   const ipv4 = await resolveFirstIpv4(host);
-  if (ipv4) {
-    console.log(`PostgreSQL: TCP=${ipv4}, TLS servername=${host} (IPv4 из DNS/DoH)`);
+  const useResolvedIpv4Tcp =
+    String(process.env.DATABASE_USE_RESOLVED_IPV4_TCP ?? '')
+      .trim()
+      .replace(/^\uFEFF/, '') === '1';
+
+  if (useResolvedIpv4Tcp && ipv4) {
+    console.log(`PostgreSQL: TCP=${ipv4}, TLS servername=${host} (DATABASE_USE_RESOLVED_IPV4_TCP=1)`);
     return {
       ...poolBase,
       host: ipv4,
@@ -205,7 +211,7 @@ async function buildPoolConfig(connString) {
       .trim()
       .replace(/^\uFEFF/, '') === '1';
 
-  if (isSupabaseDirect && !allowIpv6Conn) {
+  if (isSupabaseDirect && !allowIpv6Conn && !ipv4) {
     throw new Error(
       'Supabase: для хоста db.*.supabase.co не найден IPv4 (Direct часто только в IPv6-DNS). ' +
         'На VPS без IPv6 замените DATABASE_URL на строку «Session pooler» в Supabase → Project → Connect ' +
@@ -217,6 +223,9 @@ async function buildPoolConfig(connString) {
   if (typeof dns.setDefaultResultOrder === 'function') {
     dns.setDefaultResultOrder('ipv4first');
   }
+  console.log(
+    `PostgreSQL: ${host} — connectionString + IPv4-first DNS` + (ipv4 ? ` (A=${ipv4})` : ''),
+  );
   return {
     ...poolBase,
     connectionString: connString,
@@ -259,8 +268,8 @@ export async function initStore() {
       console.error('PostgreSQL ENETUNREACH:', msg);
       throw new Error(
         'PostgreSQL: хост недоступен (ENETUNREACH). Частые причины: только IPv6 в DNS, нет IPv6-маршрута, ' +
-          'или фаервол режет исходящий порт 5432. В .env можно задать IPv4: DATABASE_HOST_IPV4=1.2.3.4 ' +
-          '(команда: dig +short db.xxxxx.supabase.co @8.8.8.8). Либо возьмите URI Session pooler в Supabase → Connect.',
+          'или фаервол режет исходящий порт 5432. В .env: DATABASE_HOST_IPV4=1.2.3.4 или DATABASE_USE_RESOLVED_IPV4_TCP=1 ' +
+          '(TCP на IPv4 из DNS). Либо URI Session pooler в Supabase → Connect.',
       );
     }
     if (
@@ -279,8 +288,8 @@ export async function initStore() {
         ? ' Проверьте PGSSLROOTCERT (доп. CA суммируется с корнями Node).'
         : '';
       throw new Error(
-        'PostgreSQL: ошибка TLS (сертификат). Обновите CA: sudo apt install ca-certificates.' +
-          ' Либо DATABASE_SSL_USE_SYSTEM_CA=1.' +
+        'PostgreSQL: ошибка TLS (сертификат). По умолчанию используется подключение по имени хоста (не по сырому IP). ' +
+          'Если видите MITM/прокси — проверьте сеть VPS. CA: sudo apt install ca-certificates; DATABASE_SSL_USE_SYSTEM_CA=1.' +
           caHint +
           ' Временный обход (небезопасно): DATABASE_SSL_REJECT_UNAUTHORIZED=0 в .env',
       );
