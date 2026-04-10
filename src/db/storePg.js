@@ -8,6 +8,17 @@ import { EXPORT_TABLES } from './storeSqlite.js';
 let pool = null;
 
 function buildSslOption() {
+  const insecure =
+    String(process.env.DATABASE_SSL_REJECT_UNAUTHORIZED ?? '')
+      .trim()
+      .replace(/^\uFEFF/, '') === '0';
+  if (insecure) {
+    console.warn(
+      'ВНИМАНИЕ: DATABASE_SSL_REJECT_UNAUTHORIZED=0 — проверка TLS-сертификата сервера отключена (только отладка).',
+    );
+    return { rejectUnauthorized: false };
+  }
+
   const certPath = process.env.PGSSLROOTCERT?.trim().replace(/^\uFEFF/, '');
   if (certPath && fs.existsSync(certPath)) {
     return {
@@ -101,7 +112,7 @@ function manualIpv4FromEnv() {
 }
 
 /**
- * Явный IPv4 + servername для TLS: иначе pg может взять только AAAA → ENETUNREACH на VPS без IPv6.
+ * Обход ENETUNREACH IPv6: libpq hostaddr — TCP на IPv4, host (имя) — для TLS/сертификата.
  * @param {string} connString
  */
 async function buildPoolConfig(connString) {
@@ -127,29 +138,31 @@ async function buildPoolConfig(connString) {
 
   const manualIp = manualIpv4FromEnv();
   if (manualIp) {
-    console.log(`PostgreSQL: DATABASE_HOST_IPV4=${manualIp} (TLS servername=${host})`);
+    console.log(`PostgreSQL: DATABASE_HOST_IPV4=${manualIp} (hostaddr, TLS/host=${host})`);
     return {
       ...poolBase,
-      host: manualIp,
+      host,
+      hostaddr: manualIp,
       port,
       user,
       password,
       database,
-      ssl: { ...baseSsl, servername: host },
+      ssl: baseSsl,
     };
   }
 
   const ipv4 = await resolveFirstIpv4(host);
   if (ipv4) {
-    console.log(`PostgreSQL: ${host} → IPv4 ${ipv4} (TLS servername=${host})`);
+    console.log(`PostgreSQL: ${host} → hostaddr=${ipv4} (TLS по host)`);
     return {
       ...poolBase,
-      host: ipv4,
+      host,
+      hostaddr: ipv4,
       port,
       user,
       password,
       database,
-      ssl: { ...baseSsl, servername: host },
+      ssl: baseSsl,
     };
   }
 
@@ -215,6 +228,26 @@ export async function initStore() {
         'PostgreSQL: хост недоступен (ENETUNREACH). Частые причины: только IPv6 в DNS, нет IPv6-маршрута, ' +
           'или фаервол режет исходящий порт 5432. В .env можно задать IPv4: DATABASE_HOST_IPV4=1.2.3.4 ' +
           '(команда: dig +short db.xxxxx.supabase.co @8.8.8.8). Либо возьмите URI Session pooler в Supabase → Connect.',
+      );
+    }
+    if (
+      code === 'SELF_SIGNED_CERT_IN_CHAIN' ||
+      msg.includes('self-signed certificate') ||
+      msg.includes('SELF_SIGNED_CERT')
+    ) {
+      try {
+        await pool.end();
+      } catch {
+        /* ignore */
+      }
+      pool = null;
+      const caHint = process.env.PGSSLROOTCERT
+        ? ' Уберите или исправьте PGSSLROOTCERT в .env, если файл не тот.'
+        : '';
+      throw new Error(
+        'PostgreSQL: ошибка TLS (сертификат). Обновите CA: sudo apt install ca-certificates.' +
+          caHint +
+          ' Временный обход (небезопасно): DATABASE_SSL_REJECT_UNAUTHORIZED=0 в .env',
       );
     }
     throw e;
