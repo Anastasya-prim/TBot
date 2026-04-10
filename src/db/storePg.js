@@ -30,21 +30,78 @@ function invalidUrlHelp() {
   );
 }
 
+/** @param {string} hostname */
+async function resolveFirstIpv4(hostname) {
+  try {
+    const addrs = await dns.promises.resolve4(hostname);
+    if (addrs.length) return addrs[0];
+  } catch {
+    /* нет A-записей */
+  }
+  try {
+    const r = await dns.promises.lookup(hostname, { family: 4 });
+    return r.address;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Явный IPv4 + servername для TLS: иначе pg может взять только AAAA → ENETUNREACH на VPS без IPv6.
+ * @param {string} connString
+ */
+async function buildPoolConfig(connString) {
+  let u;
+  try {
+    u = new URL(connString);
+  } catch {
+    throw invalidUrlHelp();
+  }
+  if (!u.hostname) throw invalidUrlHelp();
+
+  const host = u.hostname;
+  const port = parseInt(u.port || '5432', 10);
+  const user = decodeURIComponent(u.username || '');
+  const password = decodeURIComponent(u.password || '');
+  let database = u.pathname.replace(/^\//, '') || 'postgres';
+
+  const baseSsl = buildSslOption();
+  const poolBase = {
+    max: 10,
+    connectionTimeoutMillis: 20000,
+  };
+
+  const ipv4 = await resolveFirstIpv4(host);
+  if (ipv4) {
+    console.log(`PostgreSQL: ${host} → IPv4 ${ipv4} (TLS servername=${host})`);
+    return {
+      ...poolBase,
+      host: ipv4,
+      port,
+      user,
+      password,
+      database,
+      ssl: { ...baseSsl, servername: host },
+    };
+  }
+
+  if (typeof dns.setDefaultResultOrder === 'function') {
+    dns.setDefaultResultOrder('ipv4first');
+  }
+  return {
+    ...poolBase,
+    connectionString: connString,
+    ssl: baseSsl,
+  };
+}
+
 export async function initStore() {
   const conn = process.env.DATABASE_URL?.trim().replace(/^\uFEFF/, '');
   if (!conn) throw new Error('DATABASE_URL не задан для PostgreSQL');
 
-  /* Supabase часто отдаёт AAAA (IPv6); у многих VPS нет маршрута → ENETUNREACH. Сначала пробуем IPv4. */
-  if (typeof dns.setDefaultResultOrder === 'function') {
-    dns.setDefaultResultOrder('ipv4first');
-  }
+  const poolConfig = await buildPoolConfig(conn);
 
-  pool = new pg.Pool({
-    connectionString: conn,
-    max: 10,
-    ssl: buildSslOption(),
-    connectionTimeoutMillis: 20000,
-  });
+  pool = new pg.Pool(poolConfig);
   pool.on('error', (err) => {
     console.error('PostgreSQL pool error:', err?.message || err);
   });
@@ -63,7 +120,7 @@ export async function initStore() {
       pool = null;
       throw invalidUrlHelp();
     }
-    if (e.code === 'ENETUNREACH' || msg.includes('ENETUNREACH')) {
+    if (code === 'ENETUNREACH' || msg.includes('ENETUNREACH')) {
       try {
         await pool.end();
       } catch {
@@ -71,9 +128,9 @@ export async function initStore() {
       }
       pool = null;
       throw new Error(
-        'PostgreSQL: сеть недоступна (часто IPv6 до Supabase без маршрута). ' +
-          'Включён приоритет IPv4 при следующем запуске. ' +
-          'Если снова ошибка — в Supabase «Connect» возьмите строку Session pooler (IPv4) или в .env добавьте NODE_OPTIONS=--dns-result-order=ipv4first',
+        'PostgreSQL: сеть недоступна (часто IPv6 без маршрута или нет A-записи DNS). ' +
+          'В коде уже подключение через IPv4, если он есть у хоста. ' +
+          'Иначе в Supabase «Connect» используйте Session pooler или проверьте DNS/фаервол.',
       );
     }
     throw e;
