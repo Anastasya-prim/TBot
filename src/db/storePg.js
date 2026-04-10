@@ -20,6 +20,15 @@ function buildSslOption() {
   return { rejectUnauthorized: true };
 }
 
+function invalidUrlHelp() {
+  return new Error(
+    'DATABASE_URL: неверный формат URI (Invalid URL). Частая причина — пароль с символами @ # % : / ? & + или пробел. ' +
+      'Решение: в Supabase → Database → Reset database password и задайте пароль только буквами и цифрами, ' +
+      'либо вставьте в URI пароль в виде URL-encoded (например @ → %40). ' +
+      'Строка DATABASE_URL в .env — одна строка без переноса посередине и без лишних кавычек.',
+  );
+}
+
 export async function initStore() {
   const conn = process.env.DATABASE_URL?.trim().replace(/^\uFEFF/, '');
   if (!conn) throw new Error('DATABASE_URL не задан для PostgreSQL');
@@ -33,6 +42,23 @@ export async function initStore() {
   pool.on('error', (err) => {
     console.error('PostgreSQL pool error:', err?.message || err);
   });
+
+  try {
+    await pool.query('SELECT 1');
+  } catch (e) {
+    const code = e?.code ?? e?.cause?.code;
+    const msg = String(e?.message ?? e);
+    if (code === 'ERR_INVALID_URL' || msg.includes('Invalid URL')) {
+      try {
+        await pool.end();
+      } catch {
+        /* ignore */
+      }
+      pool = null;
+      throw invalidUrlHelp();
+    }
+    throw e;
+  }
 }
 
 export function getPool() {
