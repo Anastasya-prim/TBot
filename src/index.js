@@ -1,6 +1,4 @@
 import './loadEnv.js';
-import { createBot, isDebugUpdates } from './bot.js';
-import { connectRedis, disconnectRedis } from './db/redisClient.js';
 import {
   closeStore,
   getDbPath,
@@ -8,6 +6,8 @@ import {
   ensureDatabaseSchema,
   usePostgres,
 } from './db/store.js';
+import { connectRedis, disconnectRedis } from './db/redisClient.js';
+import { createBot, isDebugUpdates } from './bot.js';
 import { initBusiness } from './data/business.js';
 
 // Убираем BOM, если .env сохранён как UTF-8 with BOM в Windows
