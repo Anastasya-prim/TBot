@@ -1,6 +1,7 @@
 import dns from 'node:dns';
 import fs from 'fs';
 import path from 'path';
+import tls from 'node:tls';
 import pg from 'pg';
 import { EXPORT_TABLES } from './storeSqlite.js';
 
@@ -52,18 +53,6 @@ function buildSslOption() {
     return { rejectUnauthorized: true, ca };
   }
   return { rejectUnauthorized: true };
-}
-
-/**
- * TCP на IP, TLS — по имени хоста из URI (SNI). В node-pg 8.x поле `hostaddr` в конфиге Pool не задаёт адрес сокета.
- * @param {string} logicalHost
- * @param {object | boolean} baseSsl
- */
-function sslForRemoteHost(logicalHost, baseSsl) {
-  if (typeof baseSsl === 'object' && baseSsl !== null) {
-    return { ...baseSsl, servername: logicalHost };
-  }
-  return { rejectUnauthorized: true, servername: logicalHost };
 }
 
 function invalidUrlHelp() {
@@ -146,7 +135,7 @@ function manualIpv4FromEnv() {
 }
 
 /**
- * Обход ENETUNREACH IPv6: libpq hostaddr — TCP на IPv4, host (имя) — для TLS/сертификата.
+ * Обход ENETUNREACH IPv6: TCP на IPv4; `ssl.servername` = хост из URI (node-pg 8.x не использует `hostaddr` для сокета).
  * @param {string} connString
  */
 async function buildPoolConfig(connString) {
@@ -172,31 +161,29 @@ async function buildPoolConfig(connString) {
 
   const manualIp = manualIpv4FromEnv();
   if (manualIp) {
-    console.log(`PostgreSQL: DATABASE_HOST_IPV4=${manualIp} (hostaddr, TLS/host=${host})`);
+    console.log(`PostgreSQL: TCP=${manualIp}, TLS servername=${host} (DATABASE_HOST_IPV4)`);
     return {
       ...poolBase,
-      host,
-      hostaddr: manualIp,
+      host: manualIp,
       port,
       user,
       password,
       database,
-      ssl: baseSsl,
+      ssl: sslForRemoteHost(host, baseSsl),
     };
   }
 
   const ipv4 = await resolveFirstIpv4(host);
   if (ipv4) {
-    console.log(`PostgreSQL: ${host} → hostaddr=${ipv4} (TLS по host)`);
+    console.log(`PostgreSQL: TCP=${ipv4}, TLS servername=${host} (IPv4 из DNS/DoH)`);
     return {
       ...poolBase,
-      host,
-      hostaddr: ipv4,
+      host: ipv4,
       port,
       user,
       password,
       database,
-      ssl: baseSsl,
+      ssl: sslForRemoteHost(host, baseSsl),
     };
   }
 
@@ -269,6 +256,7 @@ export async function initStore() {
       msg.includes('self-signed certificate') ||
       msg.includes('SELF_SIGNED_CERT')
     ) {
+      console.error('PostgreSQL TLS (исходная ошибка):', code || '(no code)', msg);
       try {
         await pool.end();
       } catch {
@@ -276,10 +264,11 @@ export async function initStore() {
       }
       pool = null;
       const caHint = process.env.PGSSLROOTCERT
-        ? ' Уберите или исправьте PGSSLROOTCERT в .env, если файл не тот.'
+        ? ' Проверьте PGSSLROOTCERT (доп. CA суммируется с корнями Node).'
         : '';
       throw new Error(
         'PostgreSQL: ошибка TLS (сертификат). Обновите CA: sudo apt install ca-certificates.' +
+          ' Либо DATABASE_SSL_USE_SYSTEM_CA=1.' +
           caHint +
           ' Временный обход (небезопасно): DATABASE_SSL_REJECT_UNAUTHORIZED=0 в .env',
       );
