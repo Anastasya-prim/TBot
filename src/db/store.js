@@ -60,6 +60,16 @@ export async function getMaxOrderNumberFromOrders() {
   return sqlite.getMaxOrderNumberFromOrders();
 }
 
+export async function upsertQuizSession(row) {
+  if (usePostgres()) return pg.upsertQuizSession(row);
+  return sqlite.upsertQuizSession(row);
+}
+
+export async function deleteQuizSession(telegramUserId) {
+  if (usePostgres()) return pg.deleteQuizSession(telegramUserId);
+  return sqlite.deleteQuizSession(telegramUserId);
+}
+
 export async function closeStore() {
   if (usePostgres()) return pg.closeStore();
   sqlite.closeStore();

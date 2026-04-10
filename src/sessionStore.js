@@ -26,6 +26,8 @@
  * @property {string} [statusOrderId]
  */
 
+import { deleteQuizSession, upsertQuizSession } from './db/store.js';
+
 const SESSION_PREFIX = 'tbot:sess:';
 const SESSION_TTL_SEC = 60 * 60 * 24 * 7;
 
@@ -76,6 +78,20 @@ export function createSessionMiddleware(redis) {
       const s = sessions.get(uid);
       if (s) {
         await redis.set(key, JSON.stringify(s), 'EX', SESSION_TTL_SEC);
+        try {
+          if (s.flow === 'quiz') {
+            await upsertQuizSession({
+              telegramUserId: String(uid),
+              quizStepIndex: s.quizStepIndex,
+              quizData: s.quizData,
+              waitingCustom: s.waitingCustom ?? null,
+            });
+          } else {
+            await deleteQuizSession(uid);
+          }
+        } catch (e) {
+          console.error('quiz_sessions:', e?.message || e);
+        }
       }
     }
   };

@@ -110,6 +110,13 @@ export async function ensureDatabaseSchema() {
       id TEXT PRIMARY KEY,
       label TEXT NOT NULL
     )`,
+    `CREATE TABLE IF NOT EXISTS quiz_sessions (
+      telegram_user_id TEXT PRIMARY KEY,
+      quiz_step_index INTEGER NOT NULL DEFAULT 0,
+      quiz_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      waiting_custom TEXT,
+      updated_at TEXT NOT NULL
+    )`,
     `CREATE INDEX IF NOT EXISTS idx_orders_phone ON orders(phone_key)`,
   ];
   for (const sql of ddl) await p.query(sql);
@@ -292,6 +299,29 @@ export async function getMaxOrderNumberFromOrders() {
     if (m) max = Math.max(max, parseInt(m[1], 10));
   }
   return max;
+}
+
+/**
+ * @param {{ telegramUserId: string, quizStepIndex: number, quizData: object, waitingCustom: string | null }} row
+ */
+export async function upsertQuizSession(row) {
+  const updatedAt = new Date().toISOString();
+  const payload = JSON.stringify(row.quizData ?? {});
+  await getPool().query(
+    `INSERT INTO quiz_sessions (telegram_user_id, quiz_step_index, quiz_data, waiting_custom, updated_at)
+     VALUES ($1,$2,$3::jsonb,$4,$5)
+     ON CONFLICT (telegram_user_id) DO UPDATE SET
+       quiz_step_index = EXCLUDED.quiz_step_index,
+       quiz_data = EXCLUDED.quiz_data,
+       waiting_custom = EXCLUDED.waiting_custom,
+       updated_at = EXCLUDED.updated_at`,
+    [String(row.telegramUserId), row.quizStepIndex ?? 0, payload, row.waitingCustom ?? null, updatedAt],
+  );
+}
+
+/** @param {string | number} telegramUserId */
+export async function deleteQuizSession(telegramUserId) {
+  await getPool().query('DELETE FROM quiz_sessions WHERE telegram_user_id = $1', [String(telegramUserId)]);
 }
 
 /**

@@ -100,6 +100,13 @@ export async function ensureDatabaseSchema() {
       id TEXT PRIMARY KEY,
       label TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS quiz_sessions (
+      telegram_user_id TEXT PRIMARY KEY,
+      quiz_step_index INTEGER NOT NULL DEFAULT 0,
+      quiz_data TEXT NOT NULL DEFAULT '{}',
+      waiting_custom TEXT,
+      updated_at TEXT NOT NULL
+    );
     CREATE INDEX IF NOT EXISTS idx_orders_phone ON orders(phone_key);
   `);
 
@@ -282,4 +289,43 @@ export async function getMaxOrderNumberFromOrders() {
   return max;
 }
 
-export const EXPORT_TABLES = ['orders', 'leads', 'history', 'faq', 'furniture', 'priorities'];
+/**
+ * Текущий прогресс квиза (дубль Redis-сессии для просмотра в БД / Supabase).
+ * @param {{ telegramUserId: string, quizStepIndex: number, quizData: object, waitingCustom: string | null }} row
+ */
+export async function upsertQuizSession(row) {
+  const updatedAt = new Date().toISOString();
+  const payload = JSON.stringify(row.quizData ?? {});
+  getDb()
+    .prepare(
+      `INSERT INTO quiz_sessions (telegram_user_id, quiz_step_index, quiz_data, waiting_custom, updated_at)
+       VALUES (@telegram_user_id, @quiz_step_index, @quiz_data, @waiting_custom, @updated_at)
+       ON CONFLICT(telegram_user_id) DO UPDATE SET
+         quiz_step_index = excluded.quiz_step_index,
+         quiz_data = excluded.quiz_data,
+         waiting_custom = excluded.waiting_custom,
+         updated_at = excluded.updated_at`,
+    )
+    .run({
+      telegram_user_id: String(row.telegramUserId),
+      quiz_step_index: row.quizStepIndex ?? 0,
+      quiz_data: payload,
+      waiting_custom: row.waitingCustom ?? null,
+      updated_at: updatedAt,
+    });
+}
+
+/** @param {string | number} telegramUserId */
+export async function deleteQuizSession(telegramUserId) {
+  getDb().prepare('DELETE FROM quiz_sessions WHERE telegram_user_id = ?').run(String(telegramUserId));
+}
+
+export const EXPORT_TABLES = [
+  'orders',
+  'leads',
+  'history',
+  'faq',
+  'furniture',
+  'priorities',
+  'quiz_sessions',
+];
