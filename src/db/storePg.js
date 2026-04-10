@@ -30,6 +30,8 @@ function invalidUrlHelp() {
   );
 }
 
+const IPV4_RE = /^(?:\d{1,3}\.){3}\d{1,3}$/;
+
 /** @param {string} hostname */
 async function tryResolveIpv4(hostname) {
   try {
@@ -47,7 +49,28 @@ async function tryResolveIpv4(hostname) {
 }
 
 /**
- * Сначала системный DNS; если IPv4 нет — через 8.8.8.8/1.1.1.1 (на VPS часто только AAAA).
+ * DNS-over-HTTPS (обход «битого» резолвера на VPS; видим ту же A-запись, что и 1.1.1.1).
+ * @param {string} hostname
+ */
+async function resolveIpv4ViaDoh(hostname) {
+  try {
+    const url = `https://1.1.1.1/dns-query?name=${encodeURIComponent(hostname)}&type=A`;
+    const res = await fetch(url, { headers: { Accept: 'application/dns-json' } });
+    if (!res.ok) return null;
+    const data = await res.json();
+    for (const a of data.Answer ?? []) {
+      if (a.type !== 1 || typeof a.data !== 'string') continue;
+      const ip = a.data.replace(/^"|"$/g, '').trim();
+      if (IPV4_RE.test(ip)) return ip;
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+/**
+ * Сначала системный DNS; затем 8.8.8.8/1.1.1.1; затем DoH (на VPS часто только AAAA для pg).
  * @param {string} hostname
  */
 async function resolveFirstIpv4(hostname) {
@@ -66,10 +89,10 @@ async function resolveFirstIpv4(hostname) {
       /* ignore */
     }
   }
-  return null;
-}
 
-const IPV4_RE = /^(?:\d{1,3}\.){3}\d{1,3}$/;
+  ip = await resolveIpv4ViaDoh(hostname);
+  return ip || null;
+}
 
 function manualIpv4FromEnv() {
   const raw = process.env.DATABASE_HOST_IPV4?.trim().replace(/^\uFEFF/, '');
@@ -128,6 +151,21 @@ async function buildPoolConfig(connString) {
       database,
       ssl: { ...baseSsl, servername: host },
     };
+  }
+
+  const isSupabaseDirect = /^db\.[^.]+\.supabase\.co$/i.test(host);
+  const allowIpv6Conn =
+    String(process.env.DATABASE_ALLOW_IPV6 ?? '')
+      .trim()
+      .replace(/^\uFEFF/, '') === '1';
+
+  if (isSupabaseDirect && !allowIpv6Conn) {
+    throw new Error(
+      'Supabase: для хоста db.*.supabase.co не найден IPv4 (Direct часто только в IPv6-DNS). ' +
+        'На VPS без IPv6 замените DATABASE_URL на строку «Session pooler» в Supabase → Project → Connect ' +
+        '(вкладка с pooler, режим Session, порт 5432 или как в UI). ' +
+        'Либо задайте DATABASE_HOST_IPV4=… Либо, если на сервере есть рабочий IPv6, добавьте DATABASE_ALLOW_IPV6=1.',
+    );
   }
 
   if (typeof dns.setDefaultResultOrder === 'function') {
