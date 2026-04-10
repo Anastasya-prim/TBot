@@ -437,11 +437,41 @@ export async function ensureDatabaseSchema() {
       waiting_custom TEXT,
       updated_at TEXT NOT NULL
     )`,
-    `CREATE INDEX IF NOT EXISTS idx_orders_phone ON orders(phone_key)`,
   ];
   for (const sql of ddl) await p.query(sql);
 
+  await migrateOrdersColumnsIfNeeded(p);
+
+  await p.query(`CREATE INDEX IF NOT EXISTS idx_orders_phone ON orders(phone_key)`);
+
   await seedDefaultsIfNeeded(p);
+}
+
+/**
+ * Старые БД могли иметь `orders` без части колонок — `CREATE TABLE IF NOT EXISTS` их не добавляет.
+ */
+async function migrateOrdersColumnsIfNeeded(/** @type {pg.Pool} */ p) {
+  await p.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS phone_key TEXT`);
+  await p.query(`UPDATE orders SET phone_key = '' WHERE phone_key IS NULL`);
+  await p.query(`ALTER TABLE orders ALTER COLUMN phone_key SET NOT NULL`);
+  await p.query(`ALTER TABLE orders ALTER COLUMN phone_key SET DEFAULT ''`);
+
+  await p.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS contract TEXT`);
+  await p.query(`
+    UPDATE orders SET contract = COALESCE(NULLIF(trim(COALESCE(contract, '')), ''), order_id::text, '')
+    WHERE contract IS NULL OR trim(COALESCE(contract, '')) = ''
+  `);
+  await p.query(`ALTER TABLE orders ALTER COLUMN contract SET NOT NULL`);
+
+  await p.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS stage TEXT`);
+  await p.query(`UPDATE orders SET stage = 'application' WHERE stage IS NULL`);
+  await p.query(`ALTER TABLE orders ALTER COLUMN stage SET NOT NULL`);
+  await p.query(`ALTER TABLE orders ALTER COLUMN stage SET DEFAULT 'application'`);
+
+  await p.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS stage_label TEXT`);
+  await p.query(`UPDATE orders SET stage_label = '' WHERE stage_label IS NULL`);
+  await p.query(`ALTER TABLE orders ALTER COLUMN stage_label SET NOT NULL`);
+  await p.query(`ALTER TABLE orders ALTER COLUMN stage_label SET DEFAULT ''`);
 }
 
 async function seedDefaultsIfNeeded(/** @type {pg.Pool} */ p) {
