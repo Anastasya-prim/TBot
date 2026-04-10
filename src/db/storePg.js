@@ -55,6 +55,18 @@ function buildSslOption() {
   return { rejectUnauthorized: true };
 }
 
+/**
+ * TCP на IP, TLS — по имени хоста из URI (SNI + проверка сертификата).
+ * @param {string} logicalHost
+ * @param {object | boolean} baseSsl
+ */
+function sslForRemoteHost(logicalHost, baseSsl) {
+  if (typeof baseSsl === 'object' && baseSsl !== null) {
+    return { ...baseSsl, servername: logicalHost };
+  }
+  return { rejectUnauthorized: true, servername: logicalHost };
+}
+
 function invalidUrlHelp() {
   return new Error(
     'DATABASE_URL: неверный формат URI (Invalid URL). Частая причина — пароль с символами @ # % : / ? & + или пробел. ' +
