@@ -1,4 +1,4 @@
-import { createSign } from 'crypto';
+import { constants, createSign } from 'crypto';
 import { readFile } from 'fs/promises';
 
 const IAM_TOKEN_URL = 'https://iam.api.cloud.yandex.net/iam/v1/tokens';
@@ -107,7 +107,7 @@ async function loadSaKey() {
 function buildSignedJwt(sa) {
   const now = Math.floor(Date.now() / 1000);
   const header = {
-    alg: 'RS256',
+    alg: 'PS256',
     typ: 'JWT',
     kid: sa.keyId,
   };
@@ -125,7 +125,11 @@ function buildSignedJwt(sa) {
   const signer = createSign('RSA-SHA256');
   signer.update(signingInput);
   signer.end();
-  const signature = signer.sign(sa.privateKey);
+  const signature = signer.sign({
+    key: sa.privateKey,
+    padding: constants.RSA_PKCS1_PSS_PADDING,
+    saltLength: constants.RSA_PSS_SALTLEN_DIGEST,
+  });
 
   return `${signingInput}.${base64Url(signature)}`;
 }
