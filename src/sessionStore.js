@@ -1,4 +1,4 @@
-/** @typedef {'idle' | 'quiz' | 'status_phone' | 'status_delivery' | 'faq'} Flow */
+/** @typedef {'idle' | 'quiz' | 'status_phone' | 'status_delivery' | 'faq' | 'ai_faq'} Flow */
 
 /**
  * @typedef {Object} QuizData
@@ -22,7 +22,6 @@
  * @property {QuizData} quizData
  * @property {'timeline' | 'budget' | 'furniture' | null} waitingCustom
  * @property {string} [statusPhone]
- * @property {string} [statusContract]
  * @property {string} [statusOrderId]
  */
 
@@ -50,7 +49,6 @@ export function emptySession() {
     quizData: {},
     waitingCustom: null,
     statusPhone: undefined,
-    statusContract: undefined,
     statusOrderId: undefined,
   };
 }

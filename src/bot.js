@@ -12,12 +12,16 @@ import {
 import { createSessionMiddleware, getSession, resetSession, truncateQuizDataFromStep } from './sessionStore.js';
 import { getRedis } from './db/redisClient.js';
 import { isValidRuPhone, normalizePhone } from './utils/phone.js';
+import { askYandexGpt } from './llm/yandexGpt.js';
 
 /** В .env с CRLF (Windows) значение бывает `1\\r` — строгое === '1' ломало отладку */
 export const isDebugUpdates =
   String(process.env.DEBUG_UPDATES ?? '')
     .trim()
     .replace(/^\uFEFF/, '') === '1';
+
+const AI_REQUEST_MIN_INTERVAL_MS = 5000;
+const aiRateLimitByUser = new Map();
 
 function escapeHtml(s) {
   return String(s)
@@ -89,6 +93,7 @@ function mainMenuKb() {
     [Markup.button.callback('📐 Рассчитать стоимость', 'main:quiz')],
     [Markup.button.callback('📦 Статус заказа', 'main:status')],
     [Markup.button.callback('❓ Частые вопросы', 'main:faq')],
+    [Markup.button.callback('🤖 Задать вопрос ИИ', 'main:ai')],
   ]);
 }
 
@@ -346,9 +351,10 @@ async function submitQuiz(ctx) {
   }
 
   await ctx.reply(
-    `Спасибо! Заявка принята.\n\nНомер вашей заявки: <b>${escapeHtml(orderId)}</b>\nСохраните его — по нему можно проверить статус в разделе «Статус заказа».\n\nМенеджер свяжется с вами в течение часа.`,
+    `Спасибо! Заявка принята.\n\nНомер вашего заказа: <b>${escapeHtml(orderId)}</b>\nСохраните его — по нему можно проверить статус в разделе «Статус заказа».\n\nМенеджер свяжется с вами в течение часа.`,
     { parse_mode: 'HTML' },
   );
+  await new Promise((r) => setTimeout(r, 2500));
   resetSession(userId);
   await sendMainMenu(ctx);
 }
@@ -357,6 +363,21 @@ async function submitQuiz(ctx) {
  * @param {Telegraf} bot
  */
 export function registerHandlers(bot) {
+  /**
+   * @param {import('telegraf').Context} ctx
+   */
+  async function enterAiMode(ctx) {
+    const s = getSession(ctx.from.id);
+    s.flow = 'ai_faq';
+    await appendLog({ type: 'ai_mode_start', userId: ctx.from.id });
+    await ctx.reply(
+      'Напишите ваш вопрос по мебели или условиям заказа. Я отвечу по базе знаний.\n\nДля выхода нажмите «◀ В меню».',
+      {
+        ...Markup.inlineKeyboard([[Markup.button.callback('◀ В меню', 'main:home')]]),
+      },
+    );
+  }
+
   bot.start(handleStart);
 
   bot.command('menu', async (ctx) => {
@@ -364,14 +385,17 @@ export function registerHandlers(bot) {
     await sendMainMenu(ctx);
   });
 
+  bot.command('ai', async (ctx) => {
+    await enterAiMode(ctx);
+  });
+
   bot.command('status', async (ctx) => {
     const s = getSession(ctx.from.id);
     s.flow = 'status_phone';
     s.statusPhone = undefined;
     s.statusOrderId = undefined;
-    s.statusContract = undefined;
     await ctx.reply(
-      'Введите номер телефона, <b>номер заявки</b> (например 2000) или номер договора (например Д-2024-001):',
+      'Введите <b>номер телефона</b> (как в заявке) или <b>номер заказа</b> (например 2000):',
       {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([[Markup.button.callback('✕ Отмена', 'st:cancel')]]),
@@ -403,9 +427,8 @@ export function registerHandlers(bot) {
     s.flow = 'status_phone';
     s.statusPhone = undefined;
     s.statusOrderId = undefined;
-    s.statusContract = undefined;
     await ctx.reply(
-      'Введите номер телефона, номер заявки (только цифры) или номер договора (Д-…):',
+      'Введите номер телефона или номер заказа (только цифры, например 2000):',
       Markup.inlineKeyboard([[Markup.button.callback('✕ Отмена', 'st:cancel')]]),
     );
   });
@@ -432,7 +455,6 @@ export function registerHandlers(bot) {
       type: 'delivery_window',
       userId: ctx.from.id,
       phone: s.statusPhone,
-      contract: s.statusContract,
       orderId: s.statusOrderId,
       window: key,
     });
@@ -447,6 +469,11 @@ export function registerHandlers(bot) {
     await ctx.answerCbQuery();
     getSession(ctx.from.id).flow = 'faq';
     await ctx.reply('Выберите тему:', { ...faqMenuKb() });
+  });
+
+  bot.action('main:ai', async (ctx) => {
+    await ctx.answerCbQuery();
+    await enterAiMode(ctx);
   });
 
   bot.action(/^faq:(\w+)$/, async (ctx) => {
@@ -635,9 +662,8 @@ export function registerHandlers(bot) {
         s.flow = 'status_phone';
         s.statusPhone = undefined;
         s.statusOrderId = undefined;
-        s.statusContract = undefined;
         await ctx.reply(
-          'Введите номер телефона, номер заявки (только цифры) или номер договора (Д-…):',
+          'Введите номер телефона или номер заказа (только цифры, например 2000):',
           Markup.inlineKeyboard([[Markup.button.callback('✕ Отмена', 'st:cancel')]]),
         );
         return;
@@ -651,7 +677,7 @@ export function registerHandlers(bot) {
       await appendLog({ type: 'status_check', userId, found: Boolean(order), query: text.slice(0, 40) });
       if (!order) {
         await ctx.reply(
-          'Заявка или заказ не найдены. Проверьте номер телефона, номер заявки (например 2001) или номер договора (например Д-2024-001).',
+          'Заказ не найден. Проверьте номер телефона или номер заказа (например 2001).',
           { ...mainMenuKb() },
         );
         resetSession(userId);
@@ -659,18 +685,13 @@ export function registerHandlers(bot) {
       }
 
       s.statusPhone = order.phoneKey;
-      s.statusContract = order.contract;
       s.statusOrderId = order.orderId;
       s.flow = 'status_delivery';
 
-      const title =
-        order.contract === order.orderId
-          ? `Ваша заявка <b>${escapeHtml(order.orderId)}</b>`
-          : `Ваша заявка <b>${escapeHtml(order.orderId)}</b> (договор <b>${escapeHtml(order.contract)}</b>)`;
-
-      await ctx.reply(`${title} на этапе: <b>${escapeHtml(order.stageLabel)}</b>.`, {
-        parse_mode: 'HTML',
-      });
+      await ctx.reply(
+        `Ваш заказ <b>${escapeHtml(order.orderId)}</b> на этапе: <b>${escapeHtml(order.stageLabel)}</b>.`,
+        { parse_mode: 'HTML' },
+      );
 
       if (order.stage === 'ready') {
         await ctx.reply('Заказ готов. Когда удобно доставить?', {
@@ -759,6 +780,49 @@ export function registerHandlers(bot) {
         await promptQuizStep(ctx);
         return;
       }
+    }
+
+    if (s.flow === 'ai_faq') {
+      const now = Date.now();
+      const lastAt = aiRateLimitByUser.get(userId) || 0;
+      const diff = now - lastAt;
+      if (diff < AI_REQUEST_MIN_INTERVAL_MS) {
+        const waitSec = Math.ceil((AI_REQUEST_MIN_INTERVAL_MS - diff) / 1000);
+        await ctx.reply(
+          `Слишком часто. Повторите запрос через ${waitSec} сек.`,
+          { ...Markup.inlineKeyboard([[Markup.button.callback('◀ В меню', 'main:home')]]) },
+        );
+        return;
+      }
+      aiRateLimitByUser.set(userId, now);
+
+      await ctx.sendChatAction('typing');
+      try {
+        const answer = await askYandexGpt(text);
+        await appendLog({
+          type: 'ai_answer',
+          userId,
+          preview: text.slice(0, 120),
+          success: true,
+        });
+        await ctx.reply(answer, {
+          ...Markup.inlineKeyboard([[Markup.button.callback('◀ В меню', 'main:home')]]),
+        });
+      } catch (e) {
+        console.error('AI answer failed:', e?.message || e);
+        await appendLog({
+          type: 'ai_answer',
+          userId,
+          preview: text.slice(0, 120),
+          success: false,
+          error: String(e?.message || e).slice(0, 300),
+        });
+        await ctx.reply(
+          'Не удалось получить ответ ИИ. Попробуйте ещё раз через минуту или вернитесь в меню.',
+          { ...Markup.inlineKeyboard([[Markup.button.callback('◀ В меню', 'main:home')]]) },
+        );
+      }
+      return;
     }
 
     await appendLog({

@@ -14,7 +14,8 @@ alwaysApply: true
 ## Вход и слои
 
 - `src/index.js` — Redis, БД, `initBusiness`, запуск polling.
-- `src/bot.js` — сценарии, квиз, статус, FAQ.
+- `src/bot.js` — сценарии, квиз, статус, FAQ, AI-режим.
+- `src/llm/yandexGpt.js` — авторизация SA (JWT -> IAM) и запросы к YandexGPT completion API.
 - `src/sessionStore.js` — middleware Redis + in-memory Map; прогресс квиза дублируется в **`quiz_sessions`** (динамический `import('./db/store.js')` без циклов).
 - `src/data/business.js` — номера заявок, `findOrder`, кэш справочников/заказов.
 - `src/db/store.js` — выбор SQLite vs `storePg.js`.
@@ -26,9 +27,10 @@ alwaysApply: true
 
 ## Квиз и FSM
 
-- `flow`: `idle` | `quiz` | `status_phone` | `status_delivery` | `faq`.
+- `flow`: `idle` | `quiz` | `status_phone` | `status_delivery` | `faq` | `ai_faq`.
 - Квиз: `quizStepIndex` **0…8**; при необходимости `waitingCustom`: `furniture` | `timeline` | `budget`.
 - Эскиз: в БД только **`sketch_file_id`** (Telegram) и заглушка **`sketch_link`**; файлы не грузятся в Supabase Storage.
+- AI-режим: вход по кнопке `🤖 Задать вопрос ИИ` или команде `/ai`, далее свободный текст -> YandexGPT; действует простой rate-limit в памяти процесса.
 
 ## PostgreSQL / VPS
 
@@ -38,6 +40,7 @@ alwaysApply: true
 ## Env (важное)
 
 - `BOT_TOKEN`, `REDIS_URL`; опционально `DATABASE_URL`, `MANAGER_CHAT_ID`, `DEBUG_UPDATES`, `SILENT_POLL`.
+- Для YandexGPT: `YC_FOLDER_ID`, `YC_SA_KEY_FILE`, опц. `YANDEX_GPT_MODEL_URI` (по умолчанию `yandexgpt-lite/latest`).
 
 ## Экспорт
 
